@@ -1,3 +1,4 @@
+#-*- coding: UTF-8 -*- 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -12,12 +13,12 @@ import requests
 DB = "hangzhou"
 base_url = "https://hz.ke.com"
 
-def get_disctricts():
+def get_disctricts():  #获取区县的名称和ＵＲＬ
     url = base_url + "/ershoufang/"
     r = requests.get(url, verify=False)
     content = r.content.decode("utf-8")
     root = etree.HTML(content)
-    distr_nodes = root.xpath('.//div[@class="m-filter"]//div[@data-role="ershoufang"]/div/a')
+    distr_nodes = root.xpath('.//div[@class="m-filter"]//div[@data-role="ershoufang"]/div/a')  #选取当前节点中所有div[@class="m-filter"]节点（而不管它们位于 . 之下的什么位置），再从匹配选择的当前节点选择div[@data-role="ershoufang"]节点（而不管它们位于div[@class="m-filter"]之下的什么位置），再选取所有div元素，再选取a元素
     result = []
     for node in distr_nodes:
         rel_url = node.attrib["href"]
@@ -30,7 +31,7 @@ def get_disctricts():
         result.append([distr_name, distr_url])
     return result
 
-def get_sub_districts():
+def get_sub_districts():  #获得小区名和url并和区县信息一起存入mongo中DB库中的sub_districts集合
     districts = get_disctricts()
     result = []
     client = pymongo.MongoClient()
@@ -41,17 +42,19 @@ def get_sub_districts():
         r = requests.get(distr_url, verify=False)
         content = r.content.decode("utf-8")
         root = etree.HTML(content)
-        subdistr_nodes = root.xpath('.//div[@class="m-filter"]//div[@data-role="ershoufang"]/div')[1].xpath('./a')
+        subdistr_nodes = root.xpath('.//div[@class="m-filter"]//div[@data-role="ershoufang"]/div')[1].xpath('./a') 
         for node in subdistr_nodes:
             sub_distr_name = node.text
             sub_distr_url = base_url + node.attrib["href"]
-            db.sub_districts.insert_one({
+            if db.sub_districts.find_one({'sub_district':sub_distr_name}) is None:  #防止重复插入
+                db.sub_districts.insert_one({
                 "district": distr_name,
                 "sub_district": sub_distr_name,
                 "url": sub_distr_url,
-            })
+                })
+            
 
-def get_item_num(entry_url):
+def get_item_num(entry_url):  #获得sub_district的房屋数
     r = requests.get(entry_url, verify=False)
     content = r.content.decode("utf-8")
     root = etree.HTML(content)
@@ -62,10 +65,10 @@ def get_item_num(entry_url):
     return int(num_str)
 
 def get_houses_by_sub_district(sub_distr_id, entry_url):
-    url_patt = entry_url + "pg{}/"
-
+    url_patt = entry_url + "pg{}/"       #page
+    # print(url_patt)
     total_num = get_item_num(entry_url)
-    last_page = math.ceil(total_num/30)
+    last_page = int(math.ceil(total_num/30))     #共显示多少页
     i = 1
     client = pymongo.MongoClient()
     db = client[DB]
@@ -80,32 +83,39 @@ def get_houses_by_sub_district(sub_distr_id, entry_url):
             r = requests.get(url, verify=False)
             content = r.content.decode("utf-8")
             root = etree.HTML(content)
-            ul_node = root.find('.//div[@class="content "]')
+            ul_node = root.find('.//div[@class="content "]')  #?
 
-        ul_node = root.find('.//ul[@class="sellListContent"]')
-        div_info = ul_node.xpath('.//div[contains(@class, "info")]')
+        ul_node = root.find('.//ul[@class="sellListContent"]')  #?
+        try:
+            div_info = ul_node.xpath('.//div[contains(@class, "info")]')
+        except Exception as e:
+            print(url)
+            print('ul_node:',ul_node)
+            raise e
+        finally:
+            pass
         for div_node in div_info:
             title_nodes = div_node.xpath('./div[@class="title"]/a[contains(@class, "maidian-detail")]')
             if len(title_nodes) == 0:
                 print("title not found")
                 continue
             title_node = title_nodes[0]
-            title = title_node.text
-            maidian = title_node.attrib["data-maidian"]
+            title = title_node.text    #eg:电梯房，三居室。新装修，采光好，中间楼层
+            maidian = title_node.attrib["data-maidian"] #eg:80374069281218560
             url = title_node.attrib["href"]
 
             xiaoqu_nodes = div_node.xpath('./div[@class="address"]/div[@class="houseInfo"]/a')
             xiaoqu_name = ""
             house_info = ""
             if len(xiaoqu_nodes) > 0:
-                xiaoqu_name = xiaoqu_nodes[0].text
-                house_info = xiaoqu_nodes[0].tail
+                xiaoqu_name = xiaoqu_nodes[0].text  #eg:天苑花园 
+                house_info = xiaoqu_nodes[0].tail     #eg:| 3室1厅 | 89.88平米 | 南 西南 | 精装 | 有电梯
 
             pos_nodes = div_node.xpath('./div[@class="flood"]/div[@class="positionInfo"]/span')
             building_info = ""
             if len(pos_nodes) > 0:
-                building_info = pos_nodes[0].tail
-                matched = re.search(r'(.*)\s+-\s+$', building_info)
+                building_info = pos_nodes[0].tail      #eg:中楼层(共25层)1998年建塔楼  -  
+                matched = re.search(r'(.*)\s+-\s+$', building_info)   #
                 if matched:
                     building_info = matched.group(1)
 
@@ -113,39 +123,39 @@ def get_houses_by_sub_district(sub_distr_id, entry_url):
             area = ""
             if len(area_nodes) > 0:
                 area_node = area_nodes[0]
-                area = area_node.text
+                area = area_node.text     #eg:翠苑
 
             follow_nodes = div_node.xpath('./div[@class="followInfo"]/span')
             follow_info = ""
             if len(follow_nodes) > 0:
                 follow_node = follow_nodes[0]
-                follow_info = follow_node.tail
+                follow_info = follow_node.tail     #eg:23人关注 / 共5次带看 / 5个月以前发布
 
             subway_nodes = div_node.xpath('./div[@class="tag"]/span[@class="subway"]')
             subway_info = ""
             if len(subway_nodes) > 0:
                 subway_node = subway_nodes[0]
-                subway_info = subway_node.text
+                subway_info = subway_node.text        #eg:距离2号线古翠路站1055米
 
             tax_nodes = div_node.xpath('./div[@class="tag"]/span[@class="taxfree"]')
             tax_info = ""
             if len(tax_nodes) > 0:
                 tax_node = tax_nodes[0]
-                tax_info = tax_node.text
+                tax_info = tax_node.text     #eg:房本满五年
 
             price_nodes = div_node.xpath('./div[@class="priceInfo"]/div[@class="totalPrice"]/span')
             price_num = 0
             price_unit = ""
             if len(price_nodes) > 0:
                 price_node = price_nodes[0]
-                price_num = price_node.text
-                price_unit = price_node.tail
+                price_num = price_node.text    #eg:345
+                price_unit = price_node.tail   #eg:万
 
             up_nodes = div_node.xpath('./div[@class="priceInfo"]/div[@class="unitPrice"]')
             unit_price = 0
             if len(up_nodes) > 0:
                 up_node = up_nodes[0]
-                unit_price = up_node.attrib["data-price"]
+                unit_price = up_node.attrib["data-price"]          #eg:38385
 
             item = {
                 "item_id": maidian,
@@ -163,7 +173,8 @@ def get_houses_by_sub_district(sub_distr_id, entry_url):
                 "price_unit": price_unit,
                 "unit_price": unit_price,
             }
-            db.house.insert_one(item)
+            if db.house.find_one({'url':url}) is None:   #一处房子对应一个url，防止重复插入
+                db.house.insert_one(item)
         i += 1
 
 def get_all_houses():
@@ -268,8 +279,8 @@ def stats():
     avg_build_year = total/count
     avg_age = 2018 - avg_build_year
     print(avg_age)
-    import sys
-    sys.exit(1)
+    # import sys
+    # sys.exit(1)
 
     print("=========== most expensive xiaoqu in each district =============")
     districts = db.sub_districts.aggregate([
@@ -430,4 +441,8 @@ def stats():
         print(house["title"], house["url"], house["xiaoqu_name"], house["price_num"], house["unit_price"])
 
 if __name__ == "__main__":
+
+    # get_sub_districts()
+    # get_all_houses()
+    update_house_info()
     stats()
